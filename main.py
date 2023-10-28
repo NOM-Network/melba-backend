@@ -16,8 +16,28 @@ from dataclasses import dataclass, field
 import traceback
 import random
 
+#logging.basicConfig(level=logging.DEBUG)
+
+from dotenv import load_dotenv
+load_dotenv()
+
 import config
 import twitch
+
+with open("emotes.txt", "r") as f:
+    emotes = f.readlines()
+messages_read = {}
+
+# Chat ELO is real
+def message_rank(message: str, user_name: str):
+    rank = random.randrange(800, 1000)
+    if user_name in messages_read:
+        rank += 200
+    emote_count = 0
+    for emote in emotes:
+        emote_count += message.count(emote)
+    rank += emote_count * 100
+    return rank
 
 @dataclass
 class SpeechEvent:
@@ -33,6 +53,7 @@ class ChatSpeechEvent(SpeechEvent):
     def __init__(self, user_message, user_name):
         self.response_text = None
         self.audio_segment = None
+        self.priority = message_rank(user_message, user_name)
         self.user_message = user_message
         self.user_name = user_name
     pass
@@ -185,9 +206,11 @@ async def speech_loop(toaster):
         try:
             speech_event = await speech_queue.get()
             print("Speaking: " + speech_event.response_text)
-            print("Responding to: " + speech_event.user_message)
+            print(f"Responding to {speech_event.user_name}: {speech_event.user_message}")
+
             await toaster.speak_audio(speech_event.audio_segment, speech_event.user_message, speech_event.response_text)
             print("Done speaking")
+            messages_read[speech_event.user_name] = messages_read.get(speech_event.user_name, 0) + 1
             await asyncio.sleep(3.0)
         except asyncio.CancelledError as e:
             raise e
@@ -196,8 +219,13 @@ async def speech_loop(toaster):
             print(traceback.format_exc())
 
 async def add_message(message: str, user: str):
-    await chat_messages.put(ChatSpeechEvent(message, user))
-    pass
+    speech_event = ChatSpeechEvent(message, user)
+    try:
+        chat_messages.put_nowait(speech_event)
+        print(f"Chat message added to queue ({user}|{speech_event.priority}): {message}")
+    except asyncio.QueueFull:
+        # Queue full, message ignored
+        pass
 
 async def main():
     toaster = Toaster()
