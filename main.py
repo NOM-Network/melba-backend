@@ -138,7 +138,8 @@ async def fetch_tts(text):
             end = time.time()
             print(f"TTS time: {end - start}s")
             try:
-                return AudioSegment.from_file(io.BytesIO(await response.read()))
+                response_bytes = await response.read()
+                return await asyncio.to_thread(AudioSegment.from_file, io.BytesIO(response_bytes))
             except pydub.exceptions.CouldntDecodeError:
                 with open("failed_tts_output", "wb") as binary_file:
                     binary_file.write(await response.read())
@@ -190,7 +191,7 @@ class Toaster:
 
     async def speak_audio(self, audio_segment, prompt, text):
         mp3_file = io.BytesIO()
-        audio_segment.export(mp3_file, format="mp3")
+        await asyncio.to_thread(audio_segment.export, mp3_file, format="mp3")
         await self._send_message(mp3_file.getvalue())
         new_speech = {
                 "type": "NewSpeech",
