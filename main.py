@@ -6,6 +6,7 @@ import time
 import wave
 import io
 import aiohttp
+from aiohttp import web
 import logging
 import websockets
 from asyncio.queues import Queue, PriorityQueue
@@ -15,6 +16,8 @@ import asyncio
 from dataclasses import dataclass, field
 import traceback
 import random
+import signal
+import sys
 
 #logging.basicConfig(level=logging.DEBUG)
 
@@ -165,29 +168,57 @@ async def tts_loop():
 # Connection to Melba Toaster
 class Toaster:
     def __init__(self):
-        self._websocket_clients = []
+        self._websocket_client = None
 
-        self.toast = True
-        self.void = False
+        self.ready_for_speech = False
+        self.tts_paused = False
 
     async def listen(self):
         async with websockets.server.serve(self._websocket_handler, host = "127.0.0.1", port = 9876) as server:
             await server.serve_forever()
 
     async def _websocket_handler(self, websocket):
-        print("Toaster connected")
-        self._websocket_clients.append(websocket)
-        while True:
-            await asyncio.sleep(.5) # surely nothing will go wrong if i set it to 0.5 :clueless:
         print("Websocket handler exited")
+        if self._websocket_client is None:
+            print("Toaster connected")
+            self._websocket_client = websocket
+            while self._websocket_client is not None:
+                try:
+                    await self._on_message(await self._websocket_client.recv())
+                except ConnectionClosed:
+                    print("Toaster connection closed")
+                    self._websocket_client = None
+                except:
+                    print("Exception in Toaster message handler:")
+                    print(traceback.format_exc())
+            print("Toaster Websocket handler exited")
+            self._websocket_client = None
+        else:
+            print("Toaster already connected, connection rejected")
+
+    async def _on_message(self, message):
+        # TODO: parse message
+        asyncio.create_task(self._process_ready())
+
+    async def _process_ready(self):
+        print("Toaster is now ready for speech")
+        self.ready_for_speech = True
+        speech_event = await speech_queue.get()
+        if self.tts_paused:
+            print("TTS paused, speech cancelled")
+            return
+        self.ready_for_speech = False
+        print("Speaking: " + speech_event.response_text)
+        print(f"Responding to {speech_event.user_name}: {speech_event.user_message}")
+        await self.speak_audio(speech_event.audio_segment, speech_event.user_message, speech_event.response_text)
+        messages_read[speech_event.user_name] = messages_read.get(speech_event.user_name, 0) + 1
 
     async def _send_message(self, message):
-        for client in self._websocket_clients:
-            try:
-                await client.send(message)
-            except ConnectionClosed:
-                print("Toaster connection closed")
-                self._websocket_clients.remove(client)
+        try:
+            await self._websocket_client.send(message)
+        except ConnectionClosed:
+            print("Toaster connection closed")
+            self._websocket_client = None
 
     async def speak_audio(self, audio_segment, prompt, text):
         mp3_file = io.BytesIO()
@@ -199,25 +230,6 @@ class Toaster:
                 "text": text,
         }
         await self._send_message(json.dumps(new_speech))
-        print("Duration:", audio_segment.duration_seconds)
-        await asyncio.sleep(audio_segment.duration_seconds)
-
-async def speech_loop(toaster):
-    while True:
-        try:
-            speech_event = await speech_queue.get()
-            print("Speaking: " + speech_event.response_text)
-            print(f"Responding to {speech_event.user_name}: {speech_event.user_message}")
-
-            await toaster.speak_audio(speech_event.audio_segment, speech_event.user_message, speech_event.response_text)
-            print("Done speaking")
-            messages_read[speech_event.user_name] = messages_read.get(speech_event.user_name, 0) + 1
-            await asyncio.sleep(3.0)
-        except asyncio.CancelledError as e:
-            raise e
-        except:
-            print("Exception during speech:")
-            print(traceback.format_exc())
 
 async def add_message(message: str, user: str):
     speech_event = ChatSpeechEvent(message, user)
@@ -228,6 +240,47 @@ async def add_message(message: str, user: str):
         # Queue full, message ignored
         pass
 
+async def handle_root(request):
+    return web.Response(text="Erm")
+
+async def handle_pause_tts(request):
+    toaster = request.app["toaster"]
+    toaster.tts_paused = not toaster.tts_paused
+    if not toaster.tts_paused:
+        # FIXME: only create a new task if it doesn't already exist
+        # TODO: fix abstraction break
+        asyncio.create_task(toaster._process_ready())
+    text = f"TTS paused: {toaster.tts_paused}"
+    print(text)
+    return web.Response(text=text)
+
+async def handle_speak(request):
+    #print(request)
+    data = await request.read()
+    segment = await asyncio.to_thread(AudioSegment.from_file, io.BytesIO(data))
+    toaster = request.app["toaster"]
+    prompt = request.headers["prompt"]
+    text = request.headers["text"]
+    await toaster.speak_audio(segment, prompt, text)
+    return web.Response(text=f"Speaking")
+
+async def control_server(toaster):
+    app = web.Application()
+    app.add_routes([web.get("/", handle_root),
+                    web.post("/control/speak", handle_speak),
+                    web.get("/control/pause_tts", handle_pause_tts)])
+    app["toaster"] = toaster
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 9878)
+    await site.start()
+    print("Control server started")
+    while True:
+        await asyncio.sleep(1.0)
+    await runner.cleanup()
+    print("Control server stopped")
+
+
 async def main():
     toaster = Toaster()
     llm = LLM()
@@ -237,9 +290,15 @@ async def main():
         tg.create_task(llm.listen())
         tg.create_task(llm_loop(llm))
         tg.create_task(tts_loop())
-        tg.create_task(speech_loop(toaster))
         tg.create_task(twitch_chat.connect())
+        tg.create_task(control_server(toaster))
         print(f"started at {time.strftime('%X')}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.add_signal_handler(signal.SIGINT, sys.exit) # TODO: clean shutdown
+    loop.create_task(main())
+    try:
+        loop.run_forever()
+    finally:
+        loop.close()
