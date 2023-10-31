@@ -110,9 +110,9 @@ class LLM:
         return json.loads(llm_response_text)["response_text"]
 
 
-chat_messages = PriorityQueue(maxsize=10)
-tts_queue = Queue(maxsize=5)
-speech_queue = Queue(maxsize=5)
+chat_messages = PriorityQueue(maxsize=3)
+tts_queue = Queue(maxsize=2)
+speech_queue = Queue(maxsize=2)
 
 async def llm_loop(llm):
     while True:
