@@ -210,7 +210,7 @@ class Toaster:
         self.ready_for_speech = False
         print("Speaking: " + speech_event.response_text)
         print(f"Responding to {speech_event.user_name}: {speech_event.user_message}")
-        await self.speak_audio(speech_event.audio_segment, speech_event.user_message, speech_event.response_text)
+        await self.speak_audio(speech_event.audio_segment, f"{speech_event.user_name}: {speech_event.user_message}", speech_event.response_text)
         messages_read[speech_event.user_name] = messages_read.get(speech_event.user_name, 0) + 1
 
     async def _send_message(self, message):
