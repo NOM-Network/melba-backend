@@ -102,12 +102,12 @@ class LLM:
         start = time.time()
         if self._websocket_client is None:
             raise Exception("LLM not connected")
-        request = {"message": prompt, "prompt_setting": "generic", "person": person}
+        request = {"fName": "getmelbaresponse", "message": prompt, "sysPromptSetting": "generic", "person": person}
         await self._send_message(json.dumps(request))
         llm_response_text = await self._recv_message()
         end = time.time()
         print(f"LLM time: {end - start}s")
-        return json.loads(llm_response_text)["response_text"]
+        return json.loads(llm_response_text)["llmResponse"]
 
 
 chat_messages = PriorityQueue(maxsize=3)
@@ -137,7 +137,7 @@ async def llm_loop(llm):
 async def fetch_tts(text):
     start = time.time()
     async with aiohttp.ClientSession() as session:
-        async with session.post(config.tts_url, data = {"text": text, "voice": "voice2", "speed": 1.2, "pitch": 10}) as response:
+        async with session.post(config.tts_url, data = {"text": text, "voice": "voice2", "speed": 1.2, "pitch": 10, "temperature": 1.0, "length_penalty": 1.0}) as response:
             end = time.time()
             print(f"TTS time: {end - start}s")
             try:
