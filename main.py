@@ -45,6 +45,7 @@ def message_rank(message: str, user_name: str):
 @dataclass
 class SpeechEvent:
     response_text: str = field(default = None, compare = False)
+    emotions: [str] = field(default = None, compare = False)
     audio_segment: AudioSegment = field(default = None, compare = False)
     pass
 
@@ -127,7 +128,8 @@ async def llm_loop(llm):
             response = None
         if response is not None:
             try:
-                message.response_text = response
+                message.response_text = response[0]
+                message.emotions = response[1]
                 await tts_queue.put(message)
             except asyncio.QueueFull:
                 print("TTS queue full, dropping message: " + message.response_text)
@@ -209,8 +211,9 @@ class Toaster:
             return
         self.ready_for_speech = False
         print("Speaking: " + speech_event.response_text)
+        print("Emotions: " + str(speech_event.emotions))
         print(f"Responding to {speech_event.user_name}: {speech_event.user_message}")
-        await self.speak_audio(speech_event.audio_segment, f"{speech_event.user_name}: {speech_event.user_message}", speech_event.response_text)
+        await self.speak_audio(speech_event.audio_segment, f"{speech_event.user_name}: {speech_event.user_message}", speech_event.response_text, speech_event.emotions)
         messages_read[speech_event.user_name] = messages_read.get(speech_event.user_name, 0) + 1
 
     async def _send_message(self, message):
@@ -220,14 +223,14 @@ class Toaster:
             print("Toaster connection closed")
             self._websocket_client = None
 
-    async def speak_audio(self, audio_segment, prompt, text):
+    async def speak_audio(self, audio_segment, prompt, text, emotions):
         mp3_file = io.BytesIO()
         await asyncio.to_thread(audio_segment.export, mp3_file, format="mp3")
         await self._send_message(mp3_file.getvalue())
         new_speech = {
                 "type": "NewSpeech",
                 "prompt": prompt,
-                "text": text,
+                "text": {"response": text, "emotions": emotions }
         }
         await self._send_message(json.dumps(new_speech))
 
@@ -261,7 +264,7 @@ async def handle_speak(request):
     toaster = request.app["toaster"]
     prompt = request.headers["prompt"]
     text = request.headers["text"]
-    await toaster.speak_audio(segment, prompt, text)
+    await toaster.speak_audio(segment, prompt, text, [])
     return web.Response(text=f"Speaking")
 
 async def control_server(toaster):
